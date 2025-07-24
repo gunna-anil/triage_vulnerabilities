@@ -93,7 +93,7 @@ jobs:
         echo "]" >> vex_report.json
 
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: triage-results
         path: |
@@ -103,4 +103,3 @@ jobs:
           grype_report.json
           extracted_cves.json
           vex_report.json
-
