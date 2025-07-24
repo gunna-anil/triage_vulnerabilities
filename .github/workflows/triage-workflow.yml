@@ -1,1 +1,106 @@
+name: Triage Policy Workflow
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16'
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install Project Dependencies
+      run: npm install
+
+    - name: Install Jelly
+      run: npm install -g jelly
+
+    - name: Generate Call Graph with Jelly
+      run: jelly index.js --callgraph callgraph.html
+
+    - name: Install CodeQL CLI
+      uses: github/codeql-action/init@v2
+      with:
+        languages: javascript
+
+    - name: Create CodeQL database
+      run: |
+        codeql database create db-nodejsscan --language=javascript --source-root=.
+
+    - name: Run Reachability Analysis
+      run: |
+        codeql query run \
+          codeql/javascript-queries/Security/CWE-079/Summary.ql \
+          --database=db-nodejsscan \
+          --output=reachability.bqrs
+
+    - name: Decode Reachability Results
+      run: |
+        codeql bqrs decode reachability.bqrs --format=csv > reachability.csv
+
+    - name: Install Syft
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Generate SBOM using Syft
+      run: syft dir:. -o json > sbom_syft.json
+
+    - name: Install Grype
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+    - name: Run Grype Vulnerability Scan
+      run: grype sbom:sbom_syft.json -o json > grype_report.json
+
+    - name: Install jq
+      run: sudo apt-get install jq -y
+
+    - name: Extract CVE details
+      run: |
+        jq '.matches[] | {cve: .vulnerability.id, severity: .vulnerability.severity, cvss: .vulnerability.cvss}' grype_report.json > extracted_cves.json
+
+    - name: Generate VEX Report
+      run: |
+        echo "[" > vex_report.json
+        first=true
+        for cve in $(jq -r '.cve' extracted_cves.json); do
+          if grep -q "$cve" reachability.csv; then
+            status="Exploitable"
+          else
+            status="Not Reachable (Not Exploitable)"
+          fi
+          if [ "$first" = true ]; then
+            first=false
+          else
+            echo "," >> vex_report.json
+          fi
+          echo "{ \"CVE\": \"$cve\", \"Status\": \"$status\" }" >> vex_report.json
+        done
+        echo "]" >> vex_report.json
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: triage-results
+        path: |
+          callgraph.html
+          reachability.csv
+          sbom_syft.json
+          grype_report.json
+          extracted_cves.json
+          vex_report.json
 
